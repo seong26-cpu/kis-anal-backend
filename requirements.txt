@@ -1,0 +1,6 @@
+Flask==3.0.3
+flask-cors==4.0.1
+requests==2.32.3
+python-dotenv==1.0.1
+# 선택 설치 (market_context.py의 KOSDAQ 지수 실측 조회용)
+# finance-datareader==0.9.96
