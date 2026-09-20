@@ -3,12 +3,16 @@
 app.py
 ======
 마켓레이더 대시보드용 Flask 백엔드.
+GET / 로 접속하면 static/index.html(프런트엔드 전체)을 그대로 서빙합니다.
+→ Render에 이 backend 폴더 하나만 배포하면, 그 주소 하나로 PC/휴대폰 어디서든
+  화면(UI)과 API(KIS 데이터)가 전부 동작합니다. 별도로 GitHub Pages 등에
+  프런트엔드를 따로 올릴 필요가 없습니다.
 
 절대 원칙
 ---------
 1. KIS_APP_KEY / KIS_APP_SECRET 은 이 파일이나 프런트엔드(HTML)에 절대 하드코딩하지 않는다.
    반드시 환경변수(.env 또는 배포 플랫폼의 환경변수 설정)로만 주입한다.
-2. 프런트엔드(trading-terminal-step*.html)는 이 서버의 /api/* 엔드포인트만 호출한다.
+2. 프런트엔드(static/index.html)는 이 서버의 /api/* 엔드포인트만 호출한다.
    KIS 실전 API는 이 서버에서만 직접 호출한다 — 브라우저에서 KIS로 직접 요청하지 않는다.
 3. case_engine.py / closing_bet.py 의 원칙을 그대로 따른다: 라이브 데이터가 없으면
    "판단불가"를 그대로 반환하고, 숫자를 임의로 채우지 않는다.
@@ -20,11 +24,11 @@ app.py
     없으면 이 폴더의 스텁 버전을 우선 사용하고, 준비되는 대로 실제 구현으로 교체)
 2) pip install -r requirements.txt
 3) .env.example 을 .env 로 복사 후 실전 키 입력 (절대 git에 커밋하지 말 것)
-4) python app.py  → http://localhost:5000
+4) python app.py  → http://localhost:5000  (브라우저로 열면 화면이 바로 뜬다)
 """
 
 import os
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 import config_store
@@ -32,12 +36,18 @@ import kis_client
 from case_engine import evaluate_case, rank_top5, CASE_PRIORITY_ORDER
 from closing_bet import evaluate_closing_bet_candidate, rank_closing_bet_candidates
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="static", static_url_path="")
 # 개발 중에는 전체 허용, 배포 시 ALLOWED_ORIGIN 환경변수로 프런트엔드 도메인만 허용 권장
 CORS(app, origins=os.environ.get("ALLOWED_ORIGIN", "*"))
 
 # 세력추적 CASE / 종가배팅 스캔 대상 종목 리스트 (감시 리스트) — 필요에 맞게 수정
 WATCHLIST = ["005930", "000660", "042700", "373220", "091990"]
+
+
+@app.route("/")
+def index():
+    """루트(/) 접속 시 프런트엔드 화면(static/index.html)을 반환. 이게 없어서 이전에 Not Found가 났던 부분."""
+    return send_from_directory(app.static_folder, "index.html")
 
 
 @app.route("/api/health")
