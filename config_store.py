@@ -25,6 +25,12 @@ def has_kis_keys() -> bool:
     return bool(k) and bool(s)
 
 
+def missing_kis_env_vars() -> list:
+    """/api/health 진단용. 값은 절대 반환하지 않고, 비어있는 '변수 이름'만 반환."""
+    names = ["KIS_APPKEY", "KIS_APPSECRET", "KIS_CANO", "KIS_ACNT_PRDT_CD"]
+    return [n for n in names if not os.environ.get(n)]
+
+
 def get_kis_account() -> Tuple[Optional[str], Optional[str]]:
     """계좌번호 앞 8자리(CANO) / 뒤 2자리(ACNT_PRDT_CD). 주문/잔고 조회 API에서 필요."""
     return os.environ.get("KIS_CANO"), os.environ.get("KIS_ACNT_PRDT_CD")

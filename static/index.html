@@ -632,16 +632,8 @@ const timelineFeed = [
 ];
 
 /* -------------------------------------------------------------------------
-   테마·섹터보드 — 47개 섹터 트리맵 + 주도 테마
+   테마·섹터보드 — 47개 섹터 트리맵 (클릭 시 하단에 해당 섹터 주도종목 표시)
 --------------------------------------------------------------------------- */
-const leadingThemes = [
-  { name:'2차전지 소재',    changeRate:4.8, leaders:['에코프로비엠','포스코퓨처엠'] },
-  { name:'로봇·자동화',     changeRate:3.6, leaders:['레인보우로보틱스','두산로보틱스'] },
-  { name:'HBM·반도체장비',  changeRate:2.9, leaders:['한미반도체','이오테크닉스'] },
-  { name:'AI 소프트웨어',   changeRate:2.1, leaders:['솔트룩스','마음AI'] },
-  { name:'조선기자재',      changeRate:1.7, leaders:['HD현대중공업','삼성중공업'] },
-];
-
 const sectorSeed = [
   ['반도체',['삼성전자','SK하이닉스']], ['반도체장비',['한미반도체','원익IPS']], ['디스플레이',['LG디스플레이','덕산네오룩스']],
   ['2차전지',['LG에너지솔루션','삼성SDI']], ['2차전지소재',['에코프로비엠','포스코퓨처엠']], ['자동차',['현대차','기아']],
@@ -661,8 +653,12 @@ const sectorSeed = [
   ['기계',['두산밥캣','현대엘리베이']], ['전기장비',['LS ELECTRIC','HD현대일렉트릭']],
 ];
 function seededRand(seed){ const x = Math.sin(seed)*10000; return x - Math.floor(x); }
-const sectorHeatmapData = sectorSeed.map(([sector, leaders], i) => ({
-  sector, leaders,
+const sectorHeatmapData = sectorSeed.map(([sector, leaderNames], i) => ({
+  sector,
+  leaders: leaderNames.map((name, li) => ({
+    name,
+    changeRate: Math.round((seededRand(i*13.37+1+(li+1)*0.51)-0.42)*9*10)/10,
+  })),
   changeRate: Math.round((seededRand(i*13.37+1)-0.5)*10*10)/10,
   volumeValue: Math.round(300 + seededRand(i*7.77+1)*4000),
 }));
@@ -963,6 +959,38 @@ function renderMarketSignal(sig){
 }
 
 /* ---------- 마켓보드 렌더 ---------- */
+/* ---------- 마켓보드: 실시간 뉴스 상태(탭 이동해도 유지) ---------- */
+let newsState = { items: null, status: '아직 불러오지 않음 (신뢰 가능한 뉴스사 기사 검색)' };
+async function loadMarketNews(){
+  const badge = document.getElementById('newsStatus');
+  badge.textContent = '불러오는 중…';
+  try{
+    const data = await apiGet('/api/market-news');
+    if(data.error){ newsState.items = []; newsState.status = data.reason || '뉴스 조회 불가'; }
+    else { newsState.items = data.items || []; newsState.status = `${newsState.items.length}건 불러옴`; }
+  }catch(e){
+    newsState.items = null; newsState.status = '백엔드 미연결 — 뉴스 조회 불가';
+  }
+  renderNewsList();
+  badge.textContent = newsState.status;
+}
+function renderNewsList(){
+  const el = document.getElementById('newsList');
+  if(!el) return;
+  if(!newsState.items || newsState.items.length===0){
+    el.innerHTML = `<p class="note" style="border-top:none; padding-top:0;">아직 뉴스가 없습니다. "뉴스 불러오기"를 눌러보세요. (백엔드에 NAVER_CLIENT_ID/SECRET 설정 필요)</p>`;
+    return;
+  }
+  el.innerHTML = newsState.items.slice(0,8).map(n=>`
+    <div class="tl-item" style="grid-template-columns:1fr;">
+      <div class="tl-body" style="padding-bottom:10px; border-bottom:1px solid var(--border-soft);">
+        <h4 style="font-size:12.5px;"><a href="${n.link}" target="_blank" rel="noopener" style="color:var(--text); text-decoration:none;">${n.title.replace(/<[^>]+>/g,'')}</a></h4>
+        <p style="font-size:11px;">${n.pubDate||''}</p>
+      </div>
+    </div>
+  `).join('');
+}
+
 function renderMarketBoard(){
   const phaseLabel = { pre:'장전', mid:'장중', close:'마감' };
   const flowMax = Math.max(...Object.values(mockMarketSignal.flow).map(v=>Math.abs(v)));
@@ -1005,9 +1033,19 @@ function renderMarketBoard(){
           </div>
           <p class="note">위험도 ${mockMarketSignal.riskLevel}/100 · Distribution Day ${mockMarketSignal.distributionDayCount}일 누적 · Follow-Through Day ${mockMarketSignal.followThroughDay?'발생':'미발생'}</p>
         </div>
+        <div class="card">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+            <h3 style="margin:0;">시황 뉴스 (신뢰 언론사 검색)</h3>
+            <button class="aibtn" id="newsRefreshBtn" style="padding:6px 11px; font-size:11.5px;">⟳ 뉴스 불러오기</button>
+          </div>
+          <div id="newsList"></div>
+          <p class="note" id="newsStatus">${newsState.status}</p>
+        </div>
       </div>
     </div>
   `;
+  renderNewsList();
+  document.getElementById('newsRefreshBtn').addEventListener('click', loadMarketNews);
 }
 
 /* ---------- 테마·섹터보드 렌더 ---------- */
@@ -1024,6 +1062,9 @@ function colorForChange(rate){
   const textColor = luminance > 140 ? '#0D1017' : '#F3F5F8';
   return { bg:`rgb(${rgb[0]},${rgb[1]},${rgb[2]})`, text:textColor };
 }
+/* ---------- 테마·섹터보드: 선택 상태(탭 이동해도 유지) ---------- */
+let selectedSectorName = null; // null이면 처음 진입 시 거래대금 1위 섹터로 자동 선택
+
 function renderSectorBoard(){
   const sorted = [...sectorHeatmapData].sort((a,b)=>b.volumeValue-a.volumeValue);
   const tiles = sorted.map((s,i)=>{
@@ -1031,15 +1072,18 @@ function renderSectorBoard(){
     const c = colorForChange(s.changeRate);
     return { ...s, tier, bg:c.bg, text:c.text };
   });
+  if(!selectedSectorName || !tiles.find(t=>t.sector===selectedSectorName)){
+    selectedSectorName = tiles[0].sector;
+  }
 
   const content = document.getElementById('tabContent');
   content.innerHTML = `
     <div class="panel-title"><h2>테마·섹터보드</h2><span class="meta">MOCK · 47개 섹터</span></div>
     <div class="card">
-      <h3>섹터 트리맵 (거래대금 크기 · 등락률 색상)</h3>
+      <h3>섹터 트리맵 (거래대금 크기 · 등락률 색상, 클릭해서 아래 주도종목 확인)</h3>
       <div class="heatmap" id="heatmapGrid">
         ${tiles.map(t => `
-          <div class="tile ${t.tier}" data-sector="${t.sector}" style="background:${t.bg}; color:${t.text};">
+          <div class="tile ${t.tier} ${t.sector===selectedSectorName?'selected':''}" data-sector="${t.sector}" style="background:${t.bg}; color:${t.text};">
             <div class="t-name">${t.sector}</div>
             <div class="t-chg">${fmtSigned(t.changeRate)}%</div>
           </div>
@@ -1048,19 +1092,8 @@ function renderSectorBoard(){
       <div class="sectordetail" id="sectorDetail"></div>
     </div>
     <div class="card" style="margin-top:16px;">
-      <h3>주도 테마 TOP5</h3>
-      <div class="themelist">
-        ${leadingThemes.map((t,i)=>`
-          <div class="theme-row">
-            <span class="theme-rank">${i+1}</span>
-            <div class="theme-main">
-              <div class="name">${t.name}</div>
-              <div class="leaders">${t.leaders.map(l=>`<span class="chip">${l}</span>`).join('')}</div>
-            </div>
-            <span class="theme-chg ${chgClass(t.changeRate)}">${fmtSigned(t.changeRate)}%</span>
-          </div>
-        `).join('')}
-      </div>
+      <h3 id="sectorLeadersTitle">주도종목</h3>
+      <div class="themelist" id="sectorLeadersList"></div>
     </div>
   `;
 
@@ -1068,20 +1101,35 @@ function renderSectorBoard(){
     document.getElementById('sectorDetail').innerHTML = `
       <span class="sd-name">${s.sector}</span>
       <span class="sd-meta">${fmtSigned(s.changeRate)}% · 거래대금 ${s.volumeValue.toLocaleString('ko-KR')}억</span>
-      <span class="sd-leaders">${s.leaders.map(l=>`<span class="chip">${l}</span>`).join('')}</span>
+      <span class="sd-leaders">${s.leaders.map(l=>`<span class="chip">${l.name}</span>`).join('')}</span>
     `;
+  }
+  function showSectorLeaders(s){
+    document.getElementById('sectorLeadersTitle').textContent = `${s.sector} · 주도종목`;
+    document.getElementById('sectorLeadersList').innerHTML = s.leaders
+      .slice().sort((a,b)=>b.changeRate-a.changeRate)
+      .map((l,i)=>`
+        <div class="theme-row">
+          <span class="theme-rank">${i+1}</span>
+          <div class="theme-main"><div class="name">${l.name}</div></div>
+          <span class="theme-chg ${chgClass(l.changeRate)}">${fmtSigned(l.changeRate)}%</span>
+        </div>
+      `).join('');
   }
   const grid = document.getElementById('heatmapGrid');
   grid.querySelectorAll('.tile').forEach(el=>{
     el.addEventListener('click', ()=>{
       grid.querySelectorAll('.tile').forEach(t=>t.classList.remove('selected'));
       el.classList.add('selected');
-      const s = tiles.find(t=>t.sector===el.dataset.sector);
+      selectedSectorName = el.dataset.sector;
+      const s = tiles.find(t=>t.sector===selectedSectorName);
       showSectorDetail(s);
+      showSectorLeaders(s);
     });
   });
-  grid.querySelector('.tile')?.classList.add('selected');
-  showSectorDetail(tiles[0]);
+  const initial = tiles.find(t=>t.sector===selectedSectorName);
+  showSectorDetail(initial);
+  showSectorLeaders(initial);
 }
 
 /* ---------- 세력추적 CASE 렌더 ---------- */
@@ -1137,33 +1185,41 @@ function renderCaseCards(list){
     </details>
   `;
 }
+/* ---------- 세력추적 CASE 상태(탭 이동해도 유지) ---------- */
+let caseState = { list: mockCaseVerdicts, status: '아직 실행 안 함 (Mock 표시 중)', universeNote: '' };
 async function runCaseScan(){
   const badge = document.getElementById('caseScanStatus');
-  badge.textContent = '스캔 중…';
+  badge.textContent = '스캔 중… (상위 종목 실시간 조회, 몇 초~수십 초 소요될 수 있음)';
   try{
     const data = await apiPost('/api/case-scan');
-    renderCaseCards((data.top5||[]).map(mapApiCaseVerdict));
-    badge.textContent = data.skipped_codes && data.skipped_codes.length
-      ? `실시간 스캔 완료 (조회 실패 ${data.skipped_codes.length}종목 제외)` : '실시간 스캔 완료';
+    caseState.list = (data.top5||[]).map(mapApiCaseVerdict);
+    const uni = data.dynamic_universe
+      ? `거래대금·등락률 상위 ${data.universe_size}종목 스캔`
+      : `유니버스 조회 실패 — 고정 ${data.universe_size}종목만 스캔`;
+    caseState.status = data.skipped_codes && data.skipped_codes.length
+      ? `${uni} (조회 실패 ${data.skipped_codes.length}종목 제외)` : `${uni} · 완료`;
+    renderCaseCards(caseState.list);
+    badge.textContent = caseState.status;
   }catch(e){
-    badge.textContent = '백엔드 미연결 — Mock 결과 유지';
+    caseState.status = '백엔드 미연결 — Mock 결과 유지';
+    badge.textContent = caseState.status;
   }
 }
 function renderCaseBoard(){
   const content = document.getElementById('tabContent');
   content.innerHTML = `
-    <div class="panel-title"><h2>세력추적 CASE 1~11</h2><span class="meta">MOCK · case_engine.py 규칙 시연</span></div>
-    <div class="enginebanner">⚙ 이 탭은 <code>case_engine.py</code>의 판정 규칙을 Mock 데이터로 UI 시연합니다. 실전 연동 시 라이브 데이터가 없으면 항상 "판단불가"로 표시되며, 임의의 숫자를 채우지 않습니다.</div>
+    <div class="panel-title"><h2>세력추적 CASE 1~11</h2><span class="meta">case_engine.py 규칙 · 거래대금/등락률 상위 스캔</span></div>
+    <div class="enginebanner">⚙ "백엔드 실시간 스캔 실행"을 누르면 거래대금·등락률 상위 종목들을 대상으로 실시간 조회합니다. 라이브 데이터가 없는 종목은 항상 "판단불가"로 표시되며, 임의의 숫자를 채우지 않습니다.</div>
     <div class="priorityref">
       ${CASE_PRIORITY_ORDER.map(cid => `<span class="priochip"><b>CASE ${cid}</b>${CASE_PROBABILITY_LABEL[cid]}</span>`).join('')}
     </div>
     <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
       <button class="aibtn" id="caseScanBtn">⟳ 백엔드 실시간 스캔 실행</button>
-      <span id="caseScanStatus" style="font-size:11.5px; color:var(--text-faint);">아직 실행 안 함 (Mock 표시 중)</span>
+      <span id="caseScanStatus" style="font-size:11.5px; color:var(--text-faint);">${caseState.status}</span>
     </div>
     <div id="caseCards"></div>
   `;
-  renderCaseCards(mockCaseVerdicts);
+  renderCaseCards(caseState.list);
   document.getElementById('caseScanBtn').addEventListener('click', runCaseScan);
 }
 
@@ -1226,30 +1282,38 @@ function renderClosingBetCards(list){
     </div>
   `).join('');
 }
+/* ---------- 종가배팅 상태(탭 이동해도 유지) ---------- */
+let closingBetState = { list: mockClosingBetCandidates, status: '아직 실행 안 함 (Mock 표시 중)' };
 async function runClosingBetScan(){
   const badge = document.getElementById('cbScanStatus');
-  badge.textContent = '스캔 중…';
+  badge.textContent = '스캔 중… (상위 종목 실시간 조회, 몇 초~수십 초 소요될 수 있음)';
   try{
     const data = await apiPost('/api/closing-bet');
-    renderClosingBetCards((data.candidates||[]).map(mapApiClosingBet));
-    badge.textContent = data.skipped_codes && data.skipped_codes.length
-      ? `실시간 스캔 완료 (조회 실패 ${data.skipped_codes.length}종목 제외)` : '실시간 스캔 완료';
+    closingBetState.list = (data.candidates||[]).map(mapApiClosingBet);
+    const uni = data.dynamic_universe
+      ? `거래대금·등락률 상위 ${data.universe_size}종목 스캔`
+      : `유니버스 조회 실패 — 고정 ${data.universe_size}종목만 스캔`;
+    closingBetState.status = data.skipped_codes && data.skipped_codes.length
+      ? `${uni} (조회 실패 ${data.skipped_codes.length}종목 제외)` : `${uni} · 완료`;
+    renderClosingBetCards(closingBetState.list);
+    badge.textContent = closingBetState.status;
   }catch(e){
-    badge.textContent = '백엔드 미연결 — Mock 결과 유지';
+    closingBetState.status = '백엔드 미연결 — Mock 결과 유지';
+    badge.textContent = closingBetState.status;
   }
 }
 function renderClosingBetBoard(){
   const content = document.getElementById('tabContent');
   content.innerHTML = `
-    <div class="panel-title"><h2>종가배팅 후보</h2><span class="meta">MOCK · closing_bet.py 규칙 시연</span></div>
-    <div class="enginebanner">⚙ 이 탭은 <code>closing_bet.py</code>의 5가지 선정조건 + 8가지 품질검증을 Mock 데이터로 시연합니다. 뉴스 내용의 질적 판단·공매도 비중 등은 API 미연동 시 항상 "판단불가"로 표시됩니다.</div>
+    <div class="panel-title"><h2>종가배팅 후보</h2><span class="meta">closing_bet.py 규칙 · 거래대금/등락률 상위 스캔</span></div>
+    <div class="enginebanner">⚙ "백엔드 실시간 스캔 실행"을 누르면 거래대금·등락률 상위 종목들을 대상으로 실시간 조회합니다. 뉴스 내용의 질적 판단·공매도 비중 등은 API 미연동 시 항상 "판단불가"로 표시됩니다.</div>
     <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
       <button class="aibtn" id="cbScanBtn">⟳ 백엔드 실시간 스캔 실행</button>
-      <span id="cbScanStatus" style="font-size:11.5px; color:var(--text-faint);">아직 실행 안 함 (Mock 표시 중)</span>
+      <span id="cbScanStatus" style="font-size:11.5px; color:var(--text-faint);">${closingBetState.status}</span>
     </div>
     <div id="cbCards"></div>
   `;
-  renderClosingBetCards(mockClosingBetCandidates);
+  renderClosingBetCards(closingBetState.list);
   document.getElementById('cbScanBtn').addEventListener('click', runClosingBetScan);
 }
 

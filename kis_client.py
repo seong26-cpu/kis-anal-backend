@@ -133,6 +133,119 @@ def get_investor_trend_raw(code: str) -> Optional[List[Dict[str, Any]]]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# 순위분석 API (거래대금/거래량 상위, 등락률 상위) — 감시 리스트를 5종목 고정에서
+# "상위 N종목"으로 동적으로 넓히기 위해 사용. 커뮤니티 버그리포트로 교차 검증된 스펙.
+# ⚠️ 외국인/기관 "수급" 자체의 순위 API(TR_ID)는 아직 미검증 — 지금은 거래대금+등락률
+#    상위만으로 감시 유니버스를 구성한다 (TODO: 수급 상위 API 확인 후 추가).
+# ---------------------------------------------------------------------------
+_name_cache: Dict[str, str] = {}  # {종목코드: 종목명} - 순위 API 응답에서 채워짐, 현재가 조회 시 이름 누락되면 여기서 보완
+
+
+def get_volume_rank_raw(count: int = 50) -> Optional[List[Dict[str, Any]]]:
+    """거래량(거래대금) 순위 (FHPST01710000)"""
+    headers = _headers("FHPST01710000")
+    if headers is None:
+        return None
+    try:
+        res = requests.get(
+            f"{_base_url()}/uapi/domestic-stock/v1/quotations/volume-rank",
+            headers=headers,
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_INPUT_ISCD": "0000",       # 0000=전체
+                "FID_DIV_CLS_CODE": "0",
+                "FID_BLNG_CLS_CODE": "0",        # 거래량순
+                "FID_TRGT_CLS_CODE": "111111111",
+                "FID_TRGT_EXLS_CLS_CODE": "0000000000",
+                "FID_INPUT_PRICE_1": "0",
+                "FID_INPUT_PRICE_2": "0",
+                "FID_VOL_CNT": "0",
+                "FID_INPUT_DATE_1": "",
+            },
+            timeout=6,
+        )
+        res.raise_for_status()
+        body = res.json()
+        if body.get("rt_cd") != "0":
+            return None
+        rows = body.get("output", [])[:count]
+        for r in rows:
+            code, name = r.get("mksc_shrn_iscd"), r.get("hts_kor_isnm")
+            if code and name:
+                _name_cache[code] = name
+        return rows
+    except requests.RequestException:
+        return None
+
+
+def get_fluctuation_rank_raw(count: int = 50) -> Optional[List[Dict[str, Any]]]:
+    """등락률 순위 (FHPST01700000)"""
+    headers = _headers("FHPST01700000")
+    if headers is None:
+        return None
+    try:
+        res = requests.get(
+            f"{_base_url()}/uapi/domestic-stock/v1/ranking/fluctuation",
+            headers=headers,
+            params={
+                "fid_cond_mrkt_div_code": "J",
+                "fid_cond_scr_div_code": "20170",
+                "fid_input_iscd": "0000",
+                "fid_rank_sort_cls_code": "0",   # 0=상승률순
+                "fid_input_cnt_1": str(count),
+                "fid_prc_cls_code": "0",
+                "fid_input_price_1": "0",
+                "fid_input_price_2": "0",
+                "fid_vol_cnt": "0",
+                "fid_trgt_cls_code": "0",
+                "fid_trgt_exls_cls_code": "0",
+                "fid_div_cls_code": "0",
+                "fid_rsfl_rate1": "0",
+                "fid_rsfl_rate2": "0",
+            },
+            timeout=6,
+        )
+        res.raise_for_status()
+        body = res.json()
+        if body.get("rt_cd") != "0":
+            return None
+        rows = body.get("output", [])[:count]
+        for r in rows:
+            code, name = r.get("mksc_shrn_iscd") or r.get("stck_shrn_iscd"), r.get("hts_kor_isnm")
+            if code and name:
+                _name_cache[code] = name
+        return rows
+    except requests.RequestException:
+        return None
+
+
+def get_scan_universe(limit: int = 100) -> List[str]:
+    """거래대금 상위 + 등락률 상위를 합쳐 감시 유니버스(종목코드 리스트)를 구성.
+    순위 API가 실패하면 빈 리스트 반환(호출 측에서 정적 WATCHLIST로 대체 처리)."""
+    codes: List[str] = []
+    seen = set()
+    for rows in (get_volume_rank_raw(limit), get_fluctuation_rank_raw(limit)):
+        if not rows:
+            continue
+        for r in rows:
+            code = r.get("mksc_shrn_iscd") or r.get("stck_shrn_iscd")
+            if code and code not in seen:
+                seen.add(code)
+                codes.append(code)
+            if len(codes) >= limit:
+                break
+        if len(codes) >= limit:
+            break
+    return codes[:limit]
+
+
+def lookup_cached_name(code: str) -> Optional[str]:
+    """순위 API 조회 중 확보한 종목명 캐시. 현재가 API가 이름을 안 줄 때 보완용."""
+    return _name_cache.get(code)
+
+
 def get_live_snapshot(code: str) -> Optional["LiveSnapshot"]:
     """case_engine.LiveSnapshot 형태로 조립. 조회 실패 필드는 None으로 남겨
     case_engine/closing_bet이 스스로 '판단불가' 처리하도록 한다 (임의로 채우지 않음)."""
@@ -167,7 +280,7 @@ def get_live_snapshot(code: str) -> Optional["LiveSnapshot"]:
 
     return LiveSnapshot(
         stock_code=code,
-        stock_name=price_raw.get("hts_kor_isnm"),
+        stock_name=price_raw.get("hts_kor_isnm") or _name_cache.get(code),
         current_price=_f("stck_prpr"),
         prev_close=_f("stck_sdpr"),
         open_price=_f("stck_oprc"),

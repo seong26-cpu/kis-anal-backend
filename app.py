@@ -5,72 +5,89 @@ app.py
 마켓레이더 대시보드용 Flask 백엔드.
 GET / 로 접속하면 static/index.html(프런트엔드 전체)을 그대로 서빙합니다.
 → Render에 이 backend 폴더 하나만 배포하면, 그 주소 하나로 PC/휴대폰 어디서든
-  화면(UI)과 API(KIS 데이터)가 전부 동작합니다. 별도로 GitHub Pages 등에
-  프런트엔드를 따로 올릴 필요가 없습니다.
+  화면(UI)과 API(KIS 데이터)가 전부 동작합니다.
 
 절대 원칙
 ---------
-1. KIS_APP_KEY / KIS_APP_SECRET 은 이 파일이나 프런트엔드(HTML)에 절대 하드코딩하지 않는다.
+1. KIS_APPKEY / KIS_APPSECRET 은 이 파일이나 프런트엔드(HTML)에 절대 하드코딩하지 않는다.
    반드시 환경변수(.env 또는 배포 플랫폼의 환경변수 설정)로만 주입한다.
 2. 프런트엔드(static/index.html)는 이 서버의 /api/* 엔드포인트만 호출한다.
-   KIS 실전 API는 이 서버에서만 직접 호출한다 — 브라우저에서 KIS로 직접 요청하지 않는다.
 3. case_engine.py / closing_bet.py 의 원칙을 그대로 따른다: 라이브 데이터가 없으면
    "판단불가"를 그대로 반환하고, 숫자를 임의로 채우지 않는다.
 
-실행 방법
----------
-1) 같은 폴더에 기존에 갖고 계신 case_engine.py, closing_bet.py 를 복사해 넣는다.
-   (news_client.py / dart_client.py / market_context.py / config_store.py 도 함께 —
-    없으면 이 폴더의 스텁 버전을 우선 사용하고, 준비되는 대로 실제 구현으로 교체)
-2) pip install -r requirements.txt
-3) .env.example 을 .env 로 복사 후 실전 키 입력 (절대 git에 커밋하지 말 것)
-4) python app.py  → http://localhost:5000  (브라우저로 열면 화면이 바로 뜬다)
+감시 유니버스(스캔 대상) 관련
+------------------------------
+- 거래대금 순위(FHPST01710000) + 등락률 순위(FHPST01700000) API로 실시간 상위 종목을
+  동적으로 가져온다(get_watchlist). 순위 API 호출이 실패하면(키 미설정 등) 정적
+  FALLBACK_WATCHLIST(5종목)로 자동 대체된다.
+- SCAN_LIMIT 환경변수로 "실제 상세 평가"할 종목 수를 제한한다(기본 30).
+  이유: CASE/종가배팅 평가 1종목당 KIS API를 2회씩 호출하므로, 100종목을 전부
+  평가하면 최대 200회 호출 + 순차 처리 시간이 길어져 KIS 초당 호출 제한과 Render
+  요청 타임아웃에 걸릴 수 있다. 순위 유니버스 자체는 최대 100종목까지 넓게 가져오되,
+  "상세 평가"는 그중 상위 SCAN_LIMIT개만 수행한다 (필요시 .env에서 조정).
 """
 
 import os
+import time
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 import config_store
 import kis_client
+import news_client
 from case_engine import evaluate_case, rank_top5, CASE_PRIORITY_ORDER
 from closing_bet import evaluate_closing_bet_candidate, rank_closing_bet_candidates
 
 app = Flask(__name__, static_folder="static", static_url_path="")
-# 개발 중에는 전체 허용, 배포 시 ALLOWED_ORIGIN 환경변수로 프런트엔드 도메인만 허용 권장
 CORS(app, origins=os.environ.get("ALLOWED_ORIGIN", "*"))
 
-# 세력추적 CASE / 종가배팅 스캔 대상 종목 리스트 (감시 리스트) — 필요에 맞게 수정
-WATCHLIST = ["005930", "000660", "042700", "373220", "091990"]
+FALLBACK_WATCHLIST = ["005930", "000660", "042700", "373220", "091990"]
+UNIVERSE_LIMIT = int(os.environ.get("UNIVERSE_LIMIT", "100"))   # 순위 유니버스 크기
+SCAN_LIMIT = int(os.environ.get("SCAN_LIMIT", "30"))            # 실제 상세평가 개수(레이트리밋 보호)
+_CALL_DELAY_SEC = 0.05
+
+
+def get_watchlist(limit: int = SCAN_LIMIT):
+    """거래대금·등락률 상위 유니버스에서 상위 limit개. 순위 API 실패 시 고정 5종목으로 대체."""
+    universe = kis_client.get_scan_universe(UNIVERSE_LIMIT)
+    if not universe:
+        return FALLBACK_WATCHLIST, False  # (종목코드 리스트, 동적유니버스사용여부)
+    return universe[:limit], True
 
 
 @app.route("/")
 def index():
-    """루트(/) 접속 시 프런트엔드 화면(static/index.html)을 반환. 이게 없어서 이전에 Not Found가 났던 부분."""
     return send_from_directory(app.static_folder, "index.html")
 
 
 @app.route("/api/health")
 def health():
-    """서버 동작 + KIS 키 설정 여부만 확인 (키 값 자체는 절대 반환하지 않음)"""
     return jsonify({
         "ok": True,
         "kis_key_configured": config_store.has_kis_keys(),
+        "missing_env_vars": config_store.missing_kis_env_vars(),
     })
 
 
 @app.route("/api/market-signal")
 def market_signal():
-    """시장 신호등 + 지수 + 수급. 실전 연동 시 kis_client에서 지수/수급 실측값을 채운다."""
     data = kis_client.get_market_overview()
     if data is None:
         return jsonify({"error": "판단불가", "reason": "KIS 지수/수급 데이터 조회 실패 또는 키 미설정"}), 200
     return jsonify(data)
 
 
+@app.route("/api/market-news")
+def market_news():
+    """시황 뉴스 — 네이버 뉴스 검색 API(신뢰 가능한 언론사 기사 색인) 기반. 키 미설정 시 판단불가."""
+    items = news_client.search_recent_news("코스피 증시")
+    if items is None:
+        return jsonify({"error": "판단불가", "reason": "뉴스 API 키(NAVER_CLIENT_ID/SECRET) 미설정 또는 조회 실패"}), 200
+    return jsonify({"items": items})
+
+
 @app.route("/api/stock/<code>")
 def stock_detail(code):
-    """종목 상세 (StockItem 스키마) — 프런트엔드 종목분석 탭이 그대로 소비할 수 있는 형태로 반환"""
     snap = kis_client.get_live_snapshot(code)
     if snap is None:
         return jsonify({"error": "판단불가", "reason": f"{code} 라이브 데이터 조회 실패"}), 200
@@ -79,11 +96,14 @@ def stock_detail(code):
 
 @app.route("/api/case-scan", methods=["GET", "POST"])
 def case_scan():
-    """WATCHLIST 전체에 대해 CASE 1~11을 평가하고, 우선순위 규칙대로 TOP5를 반환"""
+    """거래대금·등락률 상위 유니버스(최대 UNIVERSE_LIMIT종목) 중 상위 SCAN_LIMIT종목을
+    CASE 1~11로 평가하고, 우선순위 규칙대로 TOP5를 반환"""
+    watchlist, dynamic = get_watchlist()
     verdicts_by_case = {cid: [] for cid in CASE_PRIORITY_ORDER}
     errors = []
-    for code in WATCHLIST:
+    for code in watchlist:
         snap = kis_client.get_live_snapshot(code)
+        time.sleep(_CALL_DELAY_SEC)
         if snap is None:
             errors.append(code)
             continue
@@ -92,18 +112,27 @@ def case_scan():
     top5 = rank_top5(verdicts_by_case)
     return jsonify({
         "top5": [v.__dict__ for v in top5],
-        "skipped_codes": errors,  # 데이터 조회 실패 종목 (임의로 채우지 않고 제외 처리했음을 투명하게 노출)
+        "skipped_codes": errors,
+        "universe_size": len(watchlist),
+        "dynamic_universe": dynamic,  # False면 순위API 실패로 고정 5종목만 스캔된 상태
     })
 
 
 @app.route("/api/closing-bet", methods=["GET", "POST"])
 def closing_bet_scan():
-    """WATCHLIST 전체에 대해 종가배팅 5조건+8품질검증을 평가하고 상위 N개를 반환"""
+    """거래대금·등락률 상위 유니버스 중 상위 SCAN_LIMIT종목에 대해
+    종가배팅 5조건+8품질검증을 평가하고 상위 N개를 반환"""
+    watchlist, dynamic = get_watchlist()
+    volume_rows = kis_client.get_volume_rank_raw(UNIVERSE_LIMIT) or []
+    fluct_rows = kis_client.get_fluctuation_rank_raw(UNIVERSE_LIMIT) or []
+    trading_value_top_codes = {r.get("mksc_shrn_iscd") for r in volume_rows[:20]}
+    change_rate_top_codes = {r.get("mksc_shrn_iscd") or r.get("stck_shrn_iscd") for r in fluct_rows[:10]}
+
     candidates = []
     errors = []
-    trading_value_top_codes, change_rate_top_codes = kis_client.get_top_rank_code_sets(WATCHLIST)
-    for code in WATCHLIST:
+    for code in watchlist:
         snap = kis_client.get_live_snapshot(code)
+        time.sleep(_CALL_DELAY_SEC)
         if snap is None:
             errors.append(code)
             continue
@@ -116,6 +145,8 @@ def closing_bet_scan():
     return jsonify({
         "candidates": [c.__dict__ for c in ranked],
         "skipped_codes": errors,
+        "universe_size": len(watchlist),
+        "dynamic_universe": dynamic,
     })
 
 
