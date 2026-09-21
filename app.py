@@ -34,7 +34,7 @@ from flask_cors import CORS
 
 import config_store
 import kis_client
-import news_client
+import market_data_crawler
 from case_engine import evaluate_case, rank_top5, CASE_PRIORITY_ORDER
 from closing_bet import evaluate_closing_bet_candidate, rank_closing_bet_candidates
 
@@ -79,11 +79,39 @@ def market_signal():
 
 @app.route("/api/market-news")
 def market_news():
-    """시황 뉴스 — 네이버 뉴스 검색 API(신뢰 가능한 언론사 기사 색인) 기반. 키 미설정 시 판단불가."""
-    items = news_client.search_recent_news("코스피 증시")
+    """시황 뉴스 — 네이버 금융 증시 메인뉴스 크롤링 (API 키 불필요). 실패 시 판단불가."""
+    items = market_data_crawler.fetch_market_news()
     if items is None:
-        return jsonify({"error": "판단불가", "reason": "뉴스 API 키(NAVER_CLIENT_ID/SECRET) 미설정 또는 조회 실패"}), 200
+        return jsonify({"error": "판단불가", "reason": "뉴스 페이지 크롤링 실패(네트워크 또는 페이지 구조 변경)"}), 200
     return jsonify({"items": items})
+
+
+@app.route("/api/stock-news/<code>")
+def stock_news(code):
+    """종목별 뉴스 — 네이버 금융 개별 종목 뉴스탭 크롤링 (API 키 불필요). 실패 시 판단불가."""
+    items = market_data_crawler.fetch_stock_news(code)
+    if items is None:
+        return jsonify({"error": "판단불가", "reason": "뉴스 페이지 크롤링 실패(네트워크 또는 페이지 구조 변경)"}), 200
+    return jsonify({"items": items})
+
+
+@app.route("/api/sector-rankings")
+def sector_rankings():
+    """업종(섹터)별 실시간 등락률 — 네이버 금융 업종별시세 크롤링 (API 키 불필요). 실패 시 판단불가."""
+    rows = market_data_crawler.fetch_sector_rankings()
+    if rows is None:
+        return jsonify({"error": "판단불가", "reason": "업종별시세 페이지 크롤링 실패(네트워크 또는 페이지 구조 변경)"}), 200
+    return jsonify({"sectors": rows})
+
+
+@app.route("/api/search-stock")
+def search_stock():
+    """검색창에 종목명을 입력했을 때 6자리 코드로 변환 (네이버 증권 자동완성, 인증 불필요)."""
+    q = request.args.get("q", "").strip()
+    matches = market_data_crawler.resolve_stock_code(q)
+    if matches is None:
+        return jsonify({"error": "판단불가", "reason": "종목 검색 API 조회 실패"}), 200
+    return jsonify({"matches": matches})
 
 
 @app.route("/api/stock/<code>")
